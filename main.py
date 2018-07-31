@@ -15,7 +15,9 @@ parser.add_argument('--dataset', type=str, default='MNIST',
                     help='type of dataset (MNIST/pMNIST/CIFAR)')
 parser.add_argument('--model', type=str, default='LSTM',
                     help='type of recurrent net (RNN_TANH, RNN_RELU, LSTM, GRU)')
-parser.add_argument('--emsize', type=int, default=128,
+parser.add_argument('--main_emsize', type=int, default=1,
+                    help='size of embeddings for main network')
+parser.add_argument('--aux_emsize', type=int, default=128,
                     help='size of embeddings for auxiliary network')
 parser.add_argument('--nhid', type=int, default=128,
                     help='number of hidden units per layer')
@@ -51,6 +53,9 @@ parser.add_argument('--log-interval', type=int, default=100, metavar='N',
                     help='report interval')
 parser.add_argument('--save', type=str, default='model.pt',
                     help='path to save the final model')
+parser.add_argument('--load_pretrained', action='store_true',
+                    help='use pretrained main/aux model')
+
 args = parser.parse_args()
 
 # Set the random seed manually for reproducibility.
@@ -84,13 +89,18 @@ elif args.dataset == 'CIFAR':
 ###############################################################################
 
 ntokens = 255
-model = models.MainRNNModel(args.model, 1, args.nhid, args.nhid_ffn, args.nlayers,
+model = models.MainRNNModel(args.model, ntokens, args.main_emsize, args.nhid, args.nhid_ffn, args.nlayers,
                             args.dropconnect).to(device)
-aux_model = models.AuxiliaryRNNModel(args.model, ntokens, args.emsize, args.nhid, args.nhid_ffn,
+aux_model = models.AuxiliaryRNNModel(args.model, ntokens, args.aux_emsize, args.nhid, args.nhid_ffn,
                                      args.aux_nlayers, args.dropconnect).to(device)
 
-optimizer = torch.optim.RMSprop(list(model.parameters()) + list(aux_model.parameters()), lr=args.lr)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=300, gamma=0.5)
+if args.main_emsize == args.aux_emsize:
+    model.encoder.weight = aux_model.encoder.weight
+
+if args.epochs != 0:
+    step_size = int(300 * (args.epochs / 1000))
+    optimizer = torch.optim.RMSprop(list(model.parameters()) + list(aux_model.parameters()), lr=args.lr)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=step_size, gamma=0.5)
 
 if args.pre_epochs != 0:
     pre_optimizer = torch.optim.RMSprop(list(model.parameters()) + list(aux_model.parameters()), lr=args.lr)
@@ -317,28 +327,304 @@ def train():
             total = 0.
             correct = 0.
             start_time = time.time()
+        
+
+def train_v2():
+    # Turn on training mode which enables dropout.
+    model.train()
+    aux_model.train()
+    total_loss = 0.
+    total_aux_loss = 0.
+    total = 0.
+    correct = 0.
+    start_time = time.time()
+    for batch_idx, (image, target) in enumerate(train_loader):
+        image = image.t().to(device)
+        target = target.to(device)
+        hidden = model.init_hidden(args.batch_size)
+        
+        global anchor
+        if not anchor:
+            anchor = torch.randint(args.aux_length, image.size(0), (1,1)).long().item()
+
+        if anchor < (image.size(0) - args.bptt - 1):
+            # Case 1: Backprop timesteps not overwrapping
+            indices = cut_sequence(anchor + 1, args.bptt)
+            for i in indices:
+                hidden = repackage_hidden(hidden)
+                data = get_batch(image[:anchor + 1], i)
+                hidden = model(data, hidden)
+            
+            aux_hidden = aux_model.init_hidden(args.batch_size, hidden)
+
+            indices = cut_sequence(image.size(0) - (anchor + 1), args.bptt)
+            for i in indices:
+                hidden = repackage_hidden(hidden)
+                data = get_batch(image[anchor + 1:], i)
+                hidden = model(data, hidden)
+            output = model.out(hidden)
+
+        else:
+            # Case 2: Backprop timesteps overwrapping
+            indices = cut_sequence(anchor + 1, args.bptt)
+            for i in indices:
+                hidden = repackage_hidden(hidden)
+                if i == indices[-1]:
+                    saved_hidden = hidden
+                    last_idx = i
+                data = get_batch(image[:anchor + 1], i)
+                hidden = model(data, hidden)
+
+            aux_hidden = aux_model.init_hidden(args.batch_size, hidden)
+
+            indices = cut_sequence(image.size(0) - i, args.bptt)
+            hidden = saved_hidden
+            for i in indices:
+                hidden = repackage_hidden(hidden)
+                data = get_batch(image[last_idx:], i)
+                hidden = model(data, hidden)
+            output = model.out(hidden)
+
+        # Aux loss
+        subsequence = image[anchor - args.aux_length : anchor]
+
+        for j in cut_sequence(args.aux_length, args.bptt):
+            aux_data, aux_target = get_aux_batch(subsequence, j)
+            model.zero_grad()
+            aux_model.zero_grad()
+            aux_output, aux_hidden = aux_model(aux_data, aux_hidden)
+
+            aux_loss = criterion(aux_output.view(-1, ntokens), aux_target)
+            total_aux_loss += (aux_loss.item() * aux_target.size(0))
+            aux_loss.backward()
+            optimizer.step()
+
+            aux_hidden = repackage_hidden(aux_hidden)
+
+        total_aux_loss /= args.aux_length
+
+        # Main loss
+        predicted = torch.argmax(output, dim=1)
+        loss = criterion(output, target)
+
+        model.zero_grad()
+        aux_model.zero_grad()
+
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        total += target.size(0)
+        correct += (predicted == target).sum().item()
+
+        if batch_idx % args.log_interval == 0 and batch_idx > 0:
+            cur_loss = total_loss / args.log_interval
+            cur_aux_loss = total_aux_loss / args.log_interval
+            elapsed = time.time() - start_time
+            print('| epoch {:3d} | {:5d}/{:5d} batches | lr {:04.4f} | ms/batch {:5.2f} | '
+                    'loss {:5.2f} | aux_loss {:5.2f} | accuracy {:8.2f}'.format(
+                epoch, batch_idx, len(train_loader), scheduler.get_lr()[0],
+                elapsed * 1000 / args.log_interval, cur_loss, cur_aux_loss, (correct / total)))
+
+            # Log scalars to tensorboard
+            n_iter = (epoch - 1) * len(train_loader) + batch_idx
+            writer.add_scalars('data/loss', {'train': cur_loss}, n_iter)
+            writer.add_scalars('data/accuracy', {'train': correct/total}, n_iter)
+            writer.add_scalar('data/lr', scheduler.get_lr()[0], n_iter)
+            writer.add_scalar('data/aux_loss', cur_aux_loss, n_iter)
+
+            total_loss = 0.
+            total_aux_loss = 0.
+            total = 0.
+            correct = 0.
+            start_time = time.time()
+
+
+def train_v3():
+    # Turn on training mode which enables dropout.
+    model.train()
+    aux_model.train()
+    total_loss = 0.
+    total_aux_loss = 0.
+    total = 0.
+    correct = 0.
+    start_time = time.time()
+    for batch_idx, (image, target) in enumerate(train_loader):
+        image = image.t().to(device)
+        target = target.to(device)
+        hidden = model.init_hidden(args.batch_size)
+
+        losses = []
+        model.zero_grad()
+        aux_model.zero_grad()
+
+        # Main Loss
+        for j in cut_sequence(image.size(0), args.bptt):
+            hidden = repackage_hidden(hidden)
+            data = get_batch(image, j)
+            hidden = model(data, hidden)
+        
+        output = model.out(hidden)
+        predicted = torch.argmax(output, dim=1)
+
+        main_loss = criterion(output, target)
+        losses.append(main_loss)
+
+        total_loss += main_loss.item()
+        total += target.size(0)
+        correct += (predicted == target).sum().item()
+
+        # Auxiliary Loss
+        global anchor
+        if not anchor:
+            anchor = torch.randint(args.aux_length, image.size(0), (1,1)).long().item()
+        
+        hidden = model.init_hidden(args.batch_size)
+        
+        for i in cut_sequence(anchor, args.bptt):
+            hidden = repackage_hidden(hidden)
+            data = get_batch(image[:anchor], i)
+            hidden = model(data, hidden)
+        
+        aux_hidden = aux_model.init_hidden(args.batch_size, hidden)
+
+        subsequence = image[anchor - args.aux_length : anchor]
+
+        for j in cut_sequence(args.aux_length, args.bptt):
+            aux_data, aux_target = get_aux_batch(subsequence, j)
+            aux_output, aux_hidden = aux_model(aux_data, aux_hidden)
+
+            aux_loss = criterion(aux_output.view(-1, ntokens), aux_target)
+            losses.append(aux_loss)
+            aux_hidden = repackage_hidden(aux_hidden)
+            total_aux_loss += (aux_loss.item() / len(cut_sequence(args.aux_length, args.bptt)))
+        
+        # Optimize
+        loss = sum(losses)
+        loss.backward()
+        optimizer.step()
+
+        if batch_idx % args.log_interval == 0 and batch_idx > 0:
+            cur_loss = total_loss / args.log_interval
+            cur_aux_loss = total_aux_loss / args.log_interval
+            elapsed = time.time() - start_time
+            print('| epoch {:3d} | {:5d}/{:5d} batches | lr {:04.4f} | ms/batch {:5.2f} | '
+                    'loss {:5.2f} | aux_loss {:5.2f} | accuracy {:8.2f}'.format(
+                epoch, batch_idx, len(train_loader), scheduler.get_lr()[0],
+                elapsed * 1000 / args.log_interval, cur_loss, cur_aux_loss, (correct / total)))
+
+            # Log scalars to tensorboard
+            n_iter = (epoch - 1) * len(train_loader) + batch_idx
+            writer.add_scalars('data/loss', {'train': cur_loss}, n_iter)
+            writer.add_scalars('data/accuracy', {'train': correct/total}, n_iter)
+            writer.add_scalar('data/lr', scheduler.get_lr()[0], n_iter)
+            writer.add_scalar('data/aux_loss', cur_aux_loss, n_iter)
+
+            total_loss = 0.
+            total_aux_loss = 0.
+            total = 0.
+            correct = 0.
+            start_time = time.time()
+
+
+def train_v4():
+    # Turn on training mode which enables dropout.
+    model.train()
+    total_loss = 0.
+    total = 0.
+    correct = 0.
+    start_time = time.time()
+    for batch_idx, (image, target) in enumerate(train_loader):
+        image = image.t().to(device)
+        target = target.to(device)
+        hidden = model.init_hidden(args.batch_size)
+        for j in cut_sequence(image.size(0), args.bptt):
+            hidden = repackage_hidden(hidden)
+            data = get_batch(image, j)
+            hidden = model(data, hidden)
+        
+        model.zero_grad()
+        output = model.out(hidden)
+        predicted = torch.argmax(output, dim=1)
+
+        loss = criterion(output, target)
+        loss.backward()
+        optimizer.step()
+        
+        total_loss += loss.item()
+        total += target.size(0)
+        correct += (predicted == target).sum().item()
+
+        if batch_idx % args.log_interval == 0 and batch_idx > 0:
+            cur_loss = total_loss / args.log_interval
+            elapsed = time.time() - start_time
+            print('| epoch {:3d} | {:5d}/{:5d} batches | lr {:04.4f} | ms/batch {:5.2f} | '
+                    'loss {:5.2f} | accuracy {:8.2f}'.format(
+                epoch, batch_idx, len(train_loader), scheduler.get_lr()[0],
+                elapsed * 1000 / args.log_interval, cur_loss, (correct / total)))
+
+            # Log scalars to tensorboard
+            n_iter = (epoch - 1) * len(train_loader) + batch_idx
+            writer.add_scalars('data/loss', {'train': cur_loss}, n_iter)
+            writer.add_scalars('data/accuracy', {'train': correct/total}, n_iter)
+            writer.add_scalar('data/lr', scheduler.get_lr()[0], n_iter)
+            writer.add_scalars
+
+            total_loss = 0.
+            total = 0.
+            correct = 0.
+            start_time = time.time()
+
 
 # Loop over epochs.
 best_val_loss = None
 best_val_acc = None
 
-# At any point you can hit Ctrl + C to break out of training early.
-try:
+###############################################################################
+# Pretraining
+###############################################################################
+if args.load_pretrained:
     print('-' * 89)
-    print('| Pre-Training for {:3d} Epochs |'.format(args.pre_epochs))
+    print('| Loading Pretrained main/aux model |')
     print('-' * 89)
-    for epoch in range(1, args.pre_epochs+1):
-        epoch_start_time = time.time()
-        pre_scheduler.step()
-        pretrain()
-        print('-' * 89)
-        print('| end of epoch {:3d} | time: {:5.2f}s |'.format(epoch, (time.time() - epoch_start_time)))
-        print('-' * 89)
+    with open('pre_{}'.format(args.save), 'rb') as f:
+        model = torch.load(f)
+        model.rnn.flatten_parameters()
+    with open('pre_aux_{}'.format(args.save), 'rb') as f:
+        aux_model = torch.load(f)
+        aux_model.rnn.flatten_parameters()
+    with open('pre_anchor_{}'.format(args.save), 'rb') as f:
+        anchor = int(f.readline())
 
-except KeyboardInterrupt:
-    print('-' * 89)
-    print('Exiting from pre-training early')
+else:
+    # At any point you can hit Ctrl + C to break out of training early.
+    try:
+        print('-' * 89)
+        print('| Pre-Training for {:3d} Epochs |'.format(args.pre_epochs))
+        print('-' * 89)
+        for epoch in range(1, args.pre_epochs+1):
+            epoch_start_time = time.time()
+            pre_scheduler.step()
+            pretrain()
+            print('-' * 89)
+            print('| end of epoch {:3d} | time: {:5.2f}s |'.format(epoch, (time.time() - epoch_start_time)))
+            print('-' * 89)
 
+    except KeyboardInterrupt:
+        print('-' * 89)
+        print('Exiting from pre-training early')
+
+    # Save the pre-trained main/aux model for future use
+    with open('pre_{}'.format(args.save), 'wb') as f:
+        torch.save(model, f)
+    with open('pre_aux_{}'.format(args.save), 'wb') as f:
+        torch.save(aux_model, f)
+    with open('pre_anchor_{}'.format(args.save), 'wb') as f:
+        f.write(str(anchor).encode())
+
+###############################################################################
+# Training
+###############################################################################
 try:
     print('-' * 89)
     print('| Training for {:3d} Epochs |'.format(args.epochs))
@@ -346,7 +632,7 @@ try:
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()
         scheduler.step()
-        train()
+        train_v3()
         val_loss, val_acc = evaluate(valid_loader)
         print('-' * 89)
         print('| end of epoch {:3d} | time: {:5.2f}s | valid loss {:5.2f} | '

@@ -4,8 +4,9 @@ import torch
 class MainRNNModel(nn.Module):
     """Container module with an encoder, and a recurrent module for main classification network."""
 
-    def __init__(self, rnn_type, ninp, nhid, nhid_ffn, nlayers, dropconnect=0.5):
+    def __init__(self, rnn_type, ntoken, ninp, nhid, nhid_ffn, nlayers, dropconnect=0.5):
         super(MainRNNModel, self).__init__()
+        self.encoder = nn.Embedding(ntoken, ninp)
         if rnn_type in ['LSTM', 'GRU']:
             self.rnn = getattr(nn, rnn_type)(ninp, nhid, nlayers)
         else:
@@ -29,14 +30,18 @@ class MainRNNModel(nn.Module):
 
     def init_weights(self):
         initrange = 0.1
+        self.encoder.weight.data.uniform_(-initrange, initrange)
         self.pre_decoder.weight.data.uniform_(-initrange, initrange)
         self.pre_decoder.bias.data.zero_()
         self.decoder.weight.data.uniform_(-initrange, initrange)
         self.decoder.bias.data.zero_()
 
     def forward(self, input, hidden):
-        input = input.float()
-        emb = input.view(input.size(0), input.size(1), 1)
+        if self.ninp == 1:
+            input = input.float()
+            emb = input.view(input.size(0), input.size(1), 1)
+        else:
+            emb = self.encoder(input)
         _, hidden = self.rnn(emb, hidden)
         return hidden
 
