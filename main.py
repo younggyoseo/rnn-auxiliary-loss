@@ -199,6 +199,8 @@ def pretrain():
 
         for j in cut_sequence(args.aux_length, args.bptt):
             aux_data, aux_target = get_aux_batch(subsequence, j)
+            aux_model.zero_grad()
+            model.zero_grad()
 
             # Scheduled Sampling
             if args.scheduled_sampling:
@@ -222,35 +224,6 @@ def pretrain():
 
             total_aux_loss += (aux_loss.item() / len(cut_sequence(args.aux_length, args.bptt)))
             aux_hidden = repackage_hidden(aux_hidden)
-
-        # for j in cut_sequence(args.aux_length, args.bptt):
-        #     aux_data, aux_target = get_aux_batch(subsequence, j)
-        #     model.zero_grad()
-        #     aux_model.zero_grad()
-        #     losses = []
-
-        #     for idx, (data, target) in enumerate(zip(aux_data, aux_target)):
-        #         # Scheduled Sampling
-        #         if args.scheduled_sampling and idx:
-        #             step = (epoch - 1) * len(train_loader) + batch_idx
-        #             rand = torch.rand(1).item()
-        #             if rand > 1 - (step / (args.pre_epochs * len(train_loader))):
-        #                 data = predicted
-
-        #         data = data.unsqueeze(0)
-        #         aux_hidden = aux_model(data, aux_hidden)
-        #         output = aux_model.out(aux_hidden)
-        #         predicted = torch.argmax(output, dim=1)
-
-        #         aux_loss = criterion(output, target)
-        #         losses.append(aux_loss)
-        #         total_aux_loss += (aux_loss.item() / args.aux_length)
-            
-        #     # Optimize
-        #     loss = sum(losses)
-        #     loss.backward()
-        #     pre_optimizer.step()
-        #     aux_hidden = repackage_hidden(aux_hidden)
 
         if batch_idx % args.log_interval == 0 and batch_idx > 0:
             cur_aux_loss = total_aux_loss / args.log_interval
@@ -337,27 +310,6 @@ def train_joint():
             losses.append(aux_loss)
             total_aux_loss += (aux_loss.item() / len(cut_sequence(args.aux_length, args.bptt)))
             aux_hidden = repackage_hidden(aux_hidden)
-
-
-
-            # for idx, (data, target) in enumerate(zip(aux_data, aux_target)):
-            #     # Scheduled Sampling
-            #     if args.scheduled_sampling and idx:
-            #         step = (epoch - 1) * len(train_loader) + batch_idx
-            #         rand = torch.rand(1).item()
-            #         if rand > 1 - (step / (args.epochs * len(train_loader))):
-            #             data = predicted
-
-            #     data = data.unsqueeze(0)
-            #     aux_hidden = aux_model(data, aux_hidden)
-            #     output = aux_model.out(aux_hidden)
-            #     predicted = torch.argmax(output, dim=1)
-
-            #     aux_loss = criterion(output, target)
-            #     losses.append(aux_loss)
-            #     total_aux_loss += (aux_loss.item() / args.aux_length)
-            
-            # aux_hidden = repackage_hidden(aux_hidden)
 
         # Optimize
         loss = sum(losses)
