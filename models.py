@@ -7,6 +7,7 @@ class MainRNNModel(nn.Module):
     def __init__(self, ntoken, ninp, nout, nhid, nhid_ffn, nlayers, dropconnect=0.5):
         super(MainRNNModel, self).__init__()
         self.encoder = nn.Embedding(ntoken, ninp)
+        self.linear = nn.Linear(1, ninp)
         self.rnn = nn.LSTM(ninp, nhid, nlayers)
 
         self.pre_decoder = nn.Linear(nhid, nhid_ffn)
@@ -28,7 +29,10 @@ class MainRNNModel(nn.Module):
         self.decoder.bias.data.zero_()
 
     def forward(self, input, hidden):
-        emb = self.encoder(input)
+        if self.ninp == 1:
+            emb = input.float().unsqueeze(-1)
+        else:
+            emb = self.encoder(input)
         _, hidden = self.rnn(emb, hidden)
         return hidden
 
@@ -60,6 +64,7 @@ class AuxRNNModel(nn.Module):
 
     def __init__(self, ntoken, ninp, nout, nhid, nhid_ffn, nlayers, dropconnect=0.5):
         super(AuxRNNModel, self).__init__()
+        self.linear = nn.Linear(1, ninp)
         self.encoder = nn.Embedding(ntoken, ninp)
         self.rnn = nn.LSTM(ninp, nhid, nlayers)
 
@@ -82,7 +87,10 @@ class AuxRNNModel(nn.Module):
         self.decoder.bias.data.zero_()
 
     def forward(self, input, hidden):
-        emb = self.encoder(input)
+        if self.ninp == 1:
+            emb = input.float().unsqueeze(-1)
+        else:
+            emb = self.encoder(input)
         output, hidden = self.rnn(emb, hidden)
         
         pre_decoded = self.pre_decoder(output.view(output.size(0)*output.size(1), output.size(2)))

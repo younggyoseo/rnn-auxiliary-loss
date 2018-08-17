@@ -35,10 +35,10 @@ parser.add_argument('--bptt', type=int, default=300,
                     help='truncated bptt length')
 parser.add_argument('--aux_length', type=int, default=600,
                     help='subsequence length for auxiliary network')
-parser.add_argument('--aux_frequency', type=int, default=1,
-                    help='sampling frequency for auxiliary network')
 parser.add_argument('--scheduled_sampling', action='store_true',
                     help='train auxiliary network with scheduled sampling')
+parser.add_argument('--reverse', action='store_true',
+                    help='train auxiliary network with reversed subsequence')
 parser.add_argument('--dropconnect', type=float, default=0.5,
                     help='dropconnect applied to ffn in auxiliary network (0 = no dropconnect)')
 parser.add_argument('--seed', type=int, default=1111,
@@ -78,6 +78,7 @@ if args.dataset in ['MNIST', 'pMNIST']:
     permute = True if args.dataset == 'pMNIST' else False
     train_loader, valid_loader, test_loader = data.sequential_mnist(
         args.batch_size, permute)
+
 elif args.dataset == 'CIFAR':
     train_loader, valid_loader, test_loader = data.sequential_cifar10(
         args.batch_size)
@@ -197,6 +198,11 @@ def pretrain():
         aux_hidden = aux_model.init_hidden(args.batch_size, hidden)
         subsequence = image[anchor - args.aux_length : anchor]
 
+        if args.reverse:
+            # Reversed Reconstruction
+            subsequence = torch.index_select(input=subsequence, dim=0,
+                               index=torch.arange(args.aux_length - 1, -1, -1).long().to(device))
+
         for j in cut_sequence(args.aux_length, args.bptt):
             aux_data, aux_target = get_aux_batch(subsequence, j)
             aux_model.zero_grad()
@@ -279,13 +285,18 @@ def train_joint():
         
         # Get hidden state at anchor point
         hidden = model.init_hidden(args.batch_size)
-        for i in cut_sequence(anchor, args.bptt):
+        for i in cut_sequence(anchor + 1, args.bptt):
             hidden = repackage_hidden(hidden)
-            data = get_batch(image[:anchor], i)
+            data = get_batch(image[:anchor + 1], i)
             hidden = model(data, hidden)
         
         aux_hidden = aux_model.init_hidden(args.batch_size, hidden)
         subsequence = image[anchor - args.aux_length : anchor]
+
+        if args.reverse:
+            # Reversed Reconstruction
+            subsequence = torch.index_select(input=subsequence, dim=0,
+                                             index=torch.arange(args.aux_length - 1, -1, -1).long().to(device))
 
         for j in cut_sequence(args.aux_length, args.bptt):
             aux_data, aux_target = get_aux_batch(subsequence, j)
