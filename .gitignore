@@ -1,7 +1,0 @@
-*.pt
-__pycache__/
-data/
-runs/
-.ipynb_checkpoints/
-.vscode/
-.\\data/
