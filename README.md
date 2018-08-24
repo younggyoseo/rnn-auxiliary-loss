@@ -2,6 +2,10 @@
 
 An Implementation of [Learning Longer-term Dependencies in RNNs with Auxiliary Losses](https://arxiv.org/abs/1803.00144) (Trinh et al. 2018) in PyTorch.
 
+![](./pics/overview.png)
+![](./pics/r-LSMT.png)
+![](./pics/result.png)
+
 This repo gives you an **incomplete** implementation of LSTM augmented with reconstruction auxiliary loss(r-LSTM). I tried to reproduce paper's result but failed. I'm waiting for any comments or pull requests to improve this repo.
 
 # Requirements
