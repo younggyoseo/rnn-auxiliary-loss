@@ -6,10 +6,12 @@ This repo gives you an **incomplete** implementation of LSTM augmented with reco
 
 # Requirements
 
+```
 PyTorch 0.4 & Python 3.6
 Numpy
 Torchvision
 TensorboardX
+```
 
 # Examples
 
