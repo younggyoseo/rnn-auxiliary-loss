@@ -11,8 +11,8 @@ import data
 import models
 
 parser = argparse.ArgumentParser(description='RNNs with Auxiliary Losses')
-parser.add_argument('--dataset', type=str, default='MNIST',
-                    help='type of dataset (MNIST/pMNIST/CIFAR)')
+parser.add_argument('--dataset', type=str, default='pMNIST',
+                    help='type of dataset (MNIST/pMNIST')
 parser.add_argument('--emsize', type=int, default=128,
                     help='size of embeddings')
 parser.add_argument('--nhid', type=int, default=128,
@@ -49,8 +49,6 @@ parser.add_argument('--log-interval', type=int, default=100, metavar='N',
                     help='report interval')
 parser.add_argument('--save', type=str, default='model.pt',
                     help='path to save the final model')
-parser.add_argument('--load_pretrained', action='store_true',
-                    help='use pretrained main/aux model')
 parser.add_argument('--single', action='store_true',
                     help='train only main classification network')
 
@@ -74,14 +72,9 @@ writer = SummaryWriter()
 # Load data
 ###############################################################################
 
-if args.dataset in ['MNIST', 'pMNIST']:
-    permute = True if args.dataset == 'pMNIST' else False
-    train_loader, valid_loader, test_loader = data.sequential_mnist(
-        args.batch_size, permute)
-
-elif args.dataset == 'CIFAR':
-    train_loader, valid_loader, test_loader = data.sequential_cifar10(
-        args.batch_size)
+permute = True if args.dataset == 'pMNIST' else False
+train_loader, valid_loader, test_loader = data.sequential_mnist(
+    args.batch_size, permute)
 
 ###############################################################################
 # Build the model
@@ -139,7 +132,7 @@ def get_batch(source, i):
 def get_aux_batch(source, i):
     seq_len = min(args.bptt, len(source) - 1 - i)
     data = source[i:i+seq_len]
-    target = source[i+1:i+1+seq_len].view(-1)
+    target = source[i+1:i+1+seq_len].contiguous().view(-1)
     return data, target
 
 
@@ -407,18 +400,7 @@ best_val_acc = None
 ###############################################################################
 # Pretraining
 ###############################################################################
-if args.load_pretrained:
-    print('-' * 89)
-    print('| Loading Pretrained main/aux model |')
-    print('-' * 89)
-    with open('pre_{}'.format(args.save), 'rb') as f:
-        model.load_state_dict(torch.load(f))
-    with open('pre_aux_{}'.format(args.save), 'rb') as f:
-        aux_model.load_state_dict(torch.load(f))
-    with open('pre_anchor_{}'.format(args.save), 'rb') as f:
-        anchor = int(f.readline())
-
-elif args.pre_epochs == 0:
+if args.pre_epochs == 0:
     print('-' * 89)
     print('| Skipping Pretraining.. |')
     print('-' * 89)
@@ -440,16 +422,6 @@ else:
     except KeyboardInterrupt:
         print('-' * 89)
         print('Exiting from pre-training early')
-
-    # Save the pre-trained main/aux model for future use
-    # Note that saving only the model parameters is recommended approach.
-    # See https://pytorch.org/docs/master/notes/serialization.html#recommend-saving-models
-    with open('pre_{}'.format(args.save), 'wb') as f:
-        torch.save(model.state_dict(), f)
-    with open('pre_aux_{}'.format(args.save), 'wb') as f:
-        torch.save(aux_model.state_dict(), f)
-    with open('pre_anchor_{}'.format(args.save), 'wb') as f:
-        f.write(str(anchor).encode())
 
 ###############################################################################
 # Training
