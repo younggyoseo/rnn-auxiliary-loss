@@ -2,11 +2,13 @@
 
 An Implementation of [Learning Longer-term Dependencies in RNNs with Auxiliary Losses](https://arxiv.org/abs/1803.00144) (Trinh et al. 2018) in PyTorch.
 
+The paper proposes a simple method to augment RNNs with unsupervised auxiliary losses in order to improve their ability to capture long-term dependencies.
+
 <img src="https://raw.githubusercontent.com/belepi93/rnn-auxiliary-loss/master/pics/overview.png" width="500">
 <img src="https://raw.githubusercontent.com/belepi93/rnn-auxiliary-loss/master/pics/r-LSTM.png" width="500">
 <img src="https://raw.githubusercontent.com/belepi93/rnn-auxiliary-loss/master/pics/result.png" width="500">
 
-This repo gives you an **incomplete** implementation of LSTM augmented with reconstruction auxiliary loss(r-LSTM). I tried to reproduce paper's result but failed. I'm waiting for any comments or pull requests to improve this repo.
+This repo gives you an **incomplete** implementation of LSTM augmented with reconstruction auxiliary loss(r-LSTM). Since i was not able to find any code available for this paper, i had to improvise many details by myself. I tried to reproduce paper's results but without success. I'm really waiting for any comments or contributions to improve this repo. Thanks!
 
 # Requirements
 
